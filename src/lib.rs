@@ -3,6 +3,7 @@
 #![warn(missing_docs)]
 
 use chrono::{Duration, Local, NaiveDateTime};
+use serde::{Deserialize, Serialize};
 
 use std::collections::{hash_map::Entry, HashMap};
 use std::fmt::Display;
@@ -43,6 +44,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Defines a time span when time was spent on doing something.
 /// `TimeUsage`s are sorted by their starting time.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TimeUsage {
     /// The starting point of the `TimeUsage`.
     pub start: NaiveDateTime,
@@ -72,16 +74,8 @@ impl PartialEq for TimeUsage {
     }
 }
 
-/// Keeps track of all `TimeUsage`s and their associated categories as well as the the current
-/// task being done.
-pub struct TimeBook<'a> {
-    current_cat: Option<&'a str>,
-    current_cat_start: Option<NaiveDateTime>,
-    time_map: HashMap<String, Vec<TimeUsage>>,
-}
-
 /// Specifies the time span from which to show records.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum ShownTimeSpan {
     /// Show all records.
     All,
@@ -95,6 +89,15 @@ pub enum ShownTimeSpan {
     Yesterday,
     /// Show records from today.
     Today,
+}
+
+/// Keeps track of all `TimeUsage`s and their associated categories as well as the the current
+/// task being done.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TimeBook<'a> {
+    current_cat: Option<&'a str>,
+    current_cat_start: Option<NaiveDateTime>,
+    time_map: HashMap<String, Vec<TimeUsage>>,
 }
 
 impl Default for TimeBook<'_> {
