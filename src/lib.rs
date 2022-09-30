@@ -4,7 +4,7 @@
 
 use chrono::{Duration, Local, NaiveDateTime};
 
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::{hash_map::Entry, HashMap};
 use std::fmt::Display;
 
 /// An error with a message intended to be shown to the user.
@@ -16,20 +16,22 @@ pub enum Error {
     CategoryExists(String),
     /// Caused by trying to access a `TimeUsage` that doesn't exist.
     TimeUsageDoesntExist(u64),
+    /// Caused by time recording not being started.
+    NotRecordingTime,
+    /// Caused by time recording already been started.
+    AlreadyRecordingTime,
 }
 
 impl Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::CategoryExists(cat) => {
-                write!(f, "Category {} already exists.", cat)
-            }
-            Self::CategoryDoesntExist(cat) => {
-                write!(f, "Category {} doesn't exist.", cat)
-            }
+            Self::CategoryExists(cat) => write!(f, "Category {} already exists.", cat),
+            Self::CategoryDoesntExist(cat) => write!(f, "Category {} doesn't exist.", cat),
             Self::TimeUsageDoesntExist(id) => {
                 write!(f, "Time Usage with the id {} doesn't exist.", id)
             }
+            Self::NotRecordingTime => write!(f, "Time is not being recorded currently."),
+            Self::AlreadyRecordingTime => write!(f, "Time is already being recorded."),
         }
     }
 }
@@ -72,9 +74,9 @@ impl PartialEq for TimeUsage {
 
 /// Keeps track of all `TimeUsage`s and their associated categories as well as the the current
 /// task being done.
-pub struct TimeBook {
-    //current_cat: Option<String>,
-    //current_cat_start: Option<NaiveDateTime>,
+pub struct TimeBook<'a> {
+    current_cat: Option<&'a str>,
+    current_cat_start: Option<NaiveDateTime>,
     time_map: HashMap<String, Vec<TimeUsage>>,
 }
 
@@ -95,18 +97,90 @@ pub enum ShownTimeSpan {
     Today,
 }
 
-impl Default for TimeBook {
+impl Default for TimeBook<'_> {
     /// Creates a new `TimeBook`.
     fn default() -> Self {
         Self {
-            //current_cat: None,
-            //current_cat_start: None,
+            current_cat: None,
+            current_cat_start: None,
             time_map: HashMap::new(),
         }
     }
 }
 
-impl TimeBook {
+impl<'a> TimeBook<'a> {
+    /// Starts recording time for a category. If start_time is not specified starts recording from
+    /// the current moment.
+    /// Returns an `Error` if the category doesn't exist or if time is already being recorded.
+    pub fn start(&mut self, category: &'a str, start_time: Option<NaiveDateTime>) -> Result<()> {
+        if self.current_cat_start.is_some() {
+            return Err(Error::AlreadyRecordingTime);
+        }
+
+        if self.time_map.contains_key(category) {
+            if let Some(datetime) = start_time {
+                self.current_cat_start = Some(datetime);
+            } else {
+                self.current_cat_start = Some(Local::now().naive_local());
+            }
+            self.current_cat = Some(category);
+            Ok(())
+        } else {
+            Err(Error::CategoryDoesntExist(category.to_string()))
+        }
+    }
+
+    /// Stops recording time and adds the new `TimeUsage` to the category. If stop_time is not
+    /// specified the recording will be stopped at the current moment.
+    /// Returns an `Error` if time recording hasn't been started.
+    pub fn stop(
+        &mut self,
+        mut stop_time: Option<NaiveDateTime>,
+        description: Option<String>,
+    ) -> Result<()> {
+        if stop_time.is_none() {
+            stop_time = Some(Local::now().naive_local());
+        }
+
+        if let Some(start_time) = self.current_cat_start {
+            // If start_time is Some then category is as well.
+            let category = self.current_cat.unwrap();
+
+            self.add_time_usage(category, start_time, stop_time.unwrap(), description)?;
+
+            self.current_cat = None;
+            self.current_cat_start = None;
+            Ok(())
+        } else {
+            Err(Error::NotRecordingTime)
+        }
+    }
+
+    /// Returns the current category that is being recorded and the start time for that recording.
+    /// Returns an `Error` if time recording hasn't been started.
+    pub fn status(&self) -> Result<(&str, NaiveDateTime)> {
+        if let Some(start_time) = self.current_cat_start {
+            // If start_time is Some then category is as well.
+            let category = self.current_cat.unwrap();
+
+            Ok((category, start_time))
+        } else {
+            Err(Error::NotRecordingTime)
+        }
+    }
+
+    /// Cancels time recording.
+    /// Returns an `Error` if time recording hasn't been started.
+    pub fn cancel(&mut self) -> Result<()> {
+        if self.current_cat_start.is_some() {
+            self.current_cat = None;
+            self.current_cat_start = None;
+            Ok(())
+        } else {
+            Err(Error::NotRecordingTime)
+        }
+    }
+
     /// Adds a new category.
     /// Returns an `Error` if the category already exists.
     pub fn add_category(&mut self, category: String) -> Result<()> {
@@ -193,6 +267,7 @@ impl TimeBook {
 
     /// Returns a log of all time usages from the specified time span.
     /// Optionally show logs only from a single category.
+    /// Returned log is sorted so that the newest item is at the beginning.
     /// Returns an `Error` if the category doesn't exist.
     pub fn time_usage_log(
         &self,
@@ -280,6 +355,7 @@ impl TimeBook {
         }
     }
 
+    /// Concatenates a time usage to the beginning of the specified string and returns the result.
     fn concat_usage(
         mut s: String,
         usage: &TimeUsage,
@@ -302,6 +378,7 @@ impl TimeBook {
         s
     }
 
+    /// Returns true if a start_time is within the specified `ShownTimeSpan`.
     fn in_time_span(start_time: NaiveDateTime, span: ShownTimeSpan) -> bool {
         let now = Local::now().naive_local();
         let today = now.date();
@@ -433,7 +510,7 @@ mod tests {
         );
     }
 
-    fn time_book_with_usages() -> TimeBook {
+    fn time_book_with_usages() -> TimeBook<'static> {
         let now = Local::now().naive_local();
         let yesterday = Local::now().naive_local() - Duration::days(1);
         let week_ago = Local::now().naive_local() - Duration::weeks(1);
@@ -641,5 +718,75 @@ mod tests {
                 .unwrap_err(),
             Error::CategoryDoesntExist("test".to_string())
         );
+    }
+
+    #[test]
+    fn cancelling_without_starting_fails() {
+        let mut book = TimeBook::default();
+        assert_eq!(book.cancel().unwrap_err(), Error::NotRecordingTime);
+    }
+
+    #[test]
+    fn cancelling_causes_stop_and_cancel_to_fail_and_doesnt_modify_time_usages() {
+        let mut book = TimeBook::default();
+
+        book.add_category("test".to_string()).unwrap();
+        book.start("test", None).unwrap();
+        book.cancel().unwrap();
+
+        assert_eq!(book.cancel().unwrap_err(), Error::NotRecordingTime);
+        assert_eq!(book.stop(None, None).unwrap_err(), Error::NotRecordingTime);
+        assert_eq!(
+            book.time_spent("test", ShownTimeSpan::All).unwrap(),
+            Duration::zero()
+        );
+    }
+
+    #[test]
+    fn cancelling_stopping_and_status_fail_when_nothing_has_been_started() {
+        let mut book = TimeBook::default();
+
+        assert_eq!(book.cancel().unwrap_err(), Error::NotRecordingTime);
+        assert_eq!(book.stop(None, None).unwrap_err(), Error::NotRecordingTime);
+        assert_eq!(book.status().unwrap_err(), Error::NotRecordingTime);
+    }
+
+    #[test]
+    fn starting_twice_fails() {
+        let mut book = TimeBook::default();
+
+        book.add_category("test".to_string()).unwrap();
+        book.start("test", None).unwrap();
+
+        assert_eq!(
+            book.start("test", None).unwrap_err(),
+            Error::AlreadyRecordingTime
+        );
+    }
+
+    #[test]
+    fn starting_with_nonexistant_category_fails() {
+        let mut book = TimeBook::default();
+        assert_eq!(
+            book.start("test", None).unwrap_err(),
+            Error::CategoryDoesntExist("test".to_string())
+        );
+    }
+
+    #[test]
+    fn starting_updates_status_and_stop_adds_time_usage() {
+        let mut book = TimeBook::default();
+
+        book.add_category("test".to_string()).unwrap();
+
+        let now = Local::now().naive_local();
+
+        book.start("test", Some(now)).unwrap();
+
+        assert_eq!(book.status().unwrap(), ("test", now));
+
+        book.stop(Some(now + Duration::hours(2)), None).unwrap();
+
+        assert!(book.time_spent("test", ShownTimeSpan::All).unwrap() >= Duration::hours(2));
     }
 }
