@@ -3,6 +3,7 @@
 #![warn(missing_docs)]
 
 use chrono::{Duration, Local, NaiveDateTime};
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 use std::collections::{hash_map::Entry, HashMap};
@@ -16,7 +17,7 @@ pub enum Error {
     /// Caused by trying to create a category that already exists.
     CategoryExists(String),
     /// Caused by trying to access a `TimeUsage` that doesn't exist.
-    TimeUsageDoesntExist(u64),
+    TimeUsageDoesntExist(usize),
     /// Caused by time recording not being started.
     NotRecordingTime,
     /// Caused by time recording already been started.
@@ -75,7 +76,7 @@ impl PartialEq for TimeUsage {
 }
 
 /// Specifies the time span from which to show records.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum ShownTimeSpan {
     /// Show all records.
     All,
@@ -94,13 +95,13 @@ pub enum ShownTimeSpan {
 /// Keeps track of all `TimeUsage`s and their associated categories as well as the the current
 /// task being done.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct TimeBook<'a> {
-    current_cat: Option<&'a str>,
+pub struct TimeBook {
+    current_cat: Option<String>,
     current_cat_start: Option<NaiveDateTime>,
     time_map: HashMap<String, Vec<TimeUsage>>,
 }
 
-impl Default for TimeBook<'_> {
+impl Default for TimeBook {
     /// Creates a new `TimeBook`.
     fn default() -> Self {
         Self {
@@ -111,16 +112,16 @@ impl Default for TimeBook<'_> {
     }
 }
 
-impl<'a> TimeBook<'a> {
+impl TimeBook {
     /// Starts recording time for a category. If start_time is not specified starts recording from
     /// the current moment.
     /// Returns an `Error` if the category doesn't exist or if time is already being recorded.
-    pub fn start(&mut self, category: &'a str, start_time: Option<NaiveDateTime>) -> Result<()> {
+    pub fn start(&mut self, category: String, start_time: Option<NaiveDateTime>) -> Result<()> {
         if self.current_cat_start.is_some() {
             return Err(Error::AlreadyRecordingTime);
         }
 
-        if self.time_map.contains_key(category) {
+        if self.time_map.contains_key(&category) {
             if let Some(datetime) = start_time {
                 self.current_cat_start = Some(datetime);
             } else {
@@ -129,7 +130,7 @@ impl<'a> TimeBook<'a> {
             self.current_cat = Some(category);
             Ok(())
         } else {
-            Err(Error::CategoryDoesntExist(category.to_string()))
+            Err(Error::CategoryDoesntExist(category))
         }
     }
 
@@ -147,9 +148,9 @@ impl<'a> TimeBook<'a> {
 
         if let Some(start_time) = self.current_cat_start {
             // If start_time is Some then category is as well.
-            let category = self.current_cat.unwrap();
+            let category = self.current_cat.clone().unwrap();
 
-            self.add_time_usage(category, start_time, stop_time.unwrap(), description)?;
+            self.add_time_usage(&category, start_time, stop_time.unwrap(), description)?;
 
             self.current_cat = None;
             self.current_cat_start = None;
@@ -164,7 +165,7 @@ impl<'a> TimeBook<'a> {
     pub fn status(&self) -> Result<(&str, NaiveDateTime)> {
         if let Some(start_time) = self.current_cat_start {
             // If start_time is Some then category is as well.
-            let category = self.current_cat.unwrap();
+            let category = self.current_cat.as_ref().unwrap();
 
             Ok((category, start_time))
         } else {
@@ -237,10 +238,10 @@ impl<'a> TimeBook<'a> {
 
     /// Removes time usage from a category.
     /// Returns an `Error` if the category or the time usage with the specified id doesn't exist.
-    pub fn remove_time_usage(&mut self, category: &str, id: u64) -> Result<()> {
+    pub fn remove_time_usage(&mut self, category: &str, id: usize) -> Result<()> {
         if let Some(usages) = self.time_map.get_mut(category) {
-            if usages.len() > id as usize {
-                usages.remove(id as usize);
+            if usages.len() > id {
+                usages.remove(id);
                 usages.sort();
                 Ok(())
             } else {
@@ -275,14 +276,16 @@ impl<'a> TimeBook<'a> {
     pub fn time_usage_log(
         &self,
         shown_span: ShownTimeSpan,
-        category: Option<&str>,
+        category: Option<String>,
     ) -> Result<String> {
+        let category = &category;
+
         if let Some(cat) = category {
             if let Some(usages) = self.time_map.get(cat) {
                 let mut st = String::new();
 
-                for usage in usages {
-                    st = TimeBook::concat_usage(st, usage, shown_span, cat);
+                for (i, usage) in usages.iter().enumerate() {
+                    st = TimeBook::concat_usage(st, usage, i, shown_span, cat);
                 }
 
                 Ok(st)
@@ -351,7 +354,7 @@ impl<'a> TimeBook<'a> {
                 // Increment the index map for the oldest category
                 index_map.insert(oldest, index_map[oldest] + 1);
 
-                log = TimeBook::concat_usage(log, oldest_usage, shown_span, oldest);
+                log = TimeBook::concat_usage(log, oldest_usage, oldest_index, shown_span, oldest);
             }
 
             Ok(log)
@@ -362,16 +365,18 @@ impl<'a> TimeBook<'a> {
     fn concat_usage(
         mut s: String,
         usage: &TimeUsage,
+        usage_id: usize,
         shown_span: ShownTimeSpan,
         cat: &str,
     ) -> String {
         if TimeBook::in_time_span(usage.start, shown_span) {
             let fstring = "%-d/%-m/%Y %H:%M";
             let mut elem = format!(
-                "{} - {}: {}",
+                "{} - {}: {} (ID: {})",
                 usage.start.format(fstring),
                 usage.stop.format(fstring),
-                cat
+                cat,
+                usage_id
             );
             if let Some(d) = &usage.desc {
                 elem = format!("{}\n\t{}", elem, d);
@@ -513,7 +518,7 @@ mod tests {
         );
     }
 
-    fn time_book_with_usages() -> TimeBook<'static> {
+    fn time_book_with_usages() -> TimeBook {
         let now = Local::now().naive_local();
         let yesterday = Local::now().naive_local() - Duration::days(1);
         let week_ago = Local::now().naive_local() - Duration::weeks(1);
@@ -619,37 +624,37 @@ mod tests {
         let fstring = "%-d/%-m/%Y %H:%M";
 
         let now_str = format!(
-            "{} - {}: test\n\tTime usage of today\n\n",
+            "{} - {}: test (ID: 5)\n\tTime usage of today\n\n",
             now.format(fstring),
             (now + Duration::minutes(30)).format(fstring)
         );
 
         let yesterday_str = format!(
-            "{} - {}: test\n\n",
+            "{} - {}: test (ID: 4)\n\n",
             yesterday.format(fstring),
             (yesterday + Duration::minutes(30)).format(fstring)
         );
 
         let week_str = format!(
-            "{} - {}: test\n\tWeek ago\n\n",
+            "{} - {}: test (ID: 3)\n\tWeek ago\n\n",
             week_ago.format(fstring),
             (week_ago + Duration::minutes(30)).format(fstring)
         );
 
         let month_str = format!(
-            "{} - {}: test\n\n",
+            "{} - {}: test (ID: 2)\n\n",
             month_ago.format(fstring),
             (month_ago + Duration::minutes(30)).format(fstring)
         );
 
         let year_str = format!(
-            "{} - {}: test\n\tA Year ago\n\n",
+            "{} - {}: test (ID: 1)\n\tA Year ago\n\n",
             year_ago.format(fstring),
             (year_ago + Duration::minutes(30)).format(fstring)
         );
 
         let two_years_ago_str = format!(
-            "{} - {}: test\n\n",
+            "{} - {}: test (ID: 0)\n\n",
             two_years_ago.format(fstring),
             (two_years_ago + Duration::minutes(30)).format(fstring)
         );
@@ -697,19 +702,19 @@ mod tests {
 
         assert_eq!(
             book.time_usage_log(ShownTimeSpan::All, None).unwrap(),
-            "1/1/2022 10:00 - 1/1/2022 11:00: test\n\n1/1/2022 09:00 - 1/1/2022 10:00: test_second\n\n"
+            "1/1/2022 10:00 - 1/1/2022 11:00: test (ID: 0)\n\n1/1/2022 09:00 - 1/1/2022 10:00: test_second (ID: 0)\n\n"
         );
 
         assert_eq!(
-            book.time_usage_log(ShownTimeSpan::All, Some("test"))
+            book.time_usage_log(ShownTimeSpan::All, Some("test".to_string()))
                 .unwrap(),
-            "1/1/2022 10:00 - 1/1/2022 11:00: test\n\n"
+            "1/1/2022 10:00 - 1/1/2022 11:00: test (ID: 0)\n\n"
         );
 
         assert_eq!(
-            book.time_usage_log(ShownTimeSpan::All, Some("test_second"))
+            book.time_usage_log(ShownTimeSpan::All, Some("test_second".to_string()))
                 .unwrap(),
-            "1/1/2022 09:00 - 1/1/2022 10:00: test_second\n\n"
+            "1/1/2022 09:00 - 1/1/2022 10:00: test_second (ID: 0)\n\n"
         );
     }
 
@@ -717,7 +722,7 @@ mod tests {
     fn time_usage_log_returns_err_for_nonexistant_category() {
         let book = TimeBook::default();
         assert_eq!(
-            book.time_usage_log(ShownTimeSpan::All, Some("test"))
+            book.time_usage_log(ShownTimeSpan::All, Some("test".to_string()))
                 .unwrap_err(),
             Error::CategoryDoesntExist("test".to_string())
         );
@@ -734,7 +739,7 @@ mod tests {
         let mut book = TimeBook::default();
 
         book.add_category("test".to_string()).unwrap();
-        book.start("test", None).unwrap();
+        book.start("test".to_string(), None).unwrap();
         book.cancel().unwrap();
 
         assert_eq!(book.cancel().unwrap_err(), Error::NotRecordingTime);
@@ -759,10 +764,10 @@ mod tests {
         let mut book = TimeBook::default();
 
         book.add_category("test".to_string()).unwrap();
-        book.start("test", None).unwrap();
+        book.start("test".to_string(), None).unwrap();
 
         assert_eq!(
-            book.start("test", None).unwrap_err(),
+            book.start("test".to_string(), None).unwrap_err(),
             Error::AlreadyRecordingTime
         );
     }
@@ -771,7 +776,7 @@ mod tests {
     fn starting_with_nonexistant_category_fails() {
         let mut book = TimeBook::default();
         assert_eq!(
-            book.start("test", None).unwrap_err(),
+            book.start("test".to_string(), None).unwrap_err(),
             Error::CategoryDoesntExist("test".to_string())
         );
     }
@@ -784,7 +789,7 @@ mod tests {
 
         let now = Local::now().naive_local();
 
-        book.start("test", Some(now)).unwrap();
+        book.start("test".to_string(), Some(now)).unwrap();
 
         assert_eq!(book.status().unwrap(), ("test", now));
 
