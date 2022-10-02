@@ -276,7 +276,9 @@ impl TimeBook {
     pub fn time_usage_log(
         &self,
         shown_span: ShownTimeSpan,
-        category: Option<String>,
+        category: Option<String>, // This being a owned string is a workaround for some borrow
+                                  // checker issues. It doesn't currently really cause any harm and
+                                  // solves an issue so it can stay.
     ) -> Result<String> {
         let category = &category;
 
